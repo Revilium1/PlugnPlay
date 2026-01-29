@@ -135,67 +135,47 @@ class PluginLoader {
   }
 }
 
-// ================= PLUGINS =================
+async function setupPluginGUI(loader) {
+  const guiList = document.getElementById("plugin-list");
+  const pluginFiles = await loader.fetchPluginList();
 
-// --- ICE MECHANIC ---
-export function IcePlugin(engine) {
-  engine.bus.on("entityMoved", e => {
-    if (!e.components.ice) return;
-    const v = e.components.velocity;
-    e.components._iceDir = { dx: v.dx, dy: v.dy };
-  });
+  pluginFiles.forEach(file => {
+    const row = document.createElement("div");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.id = file;
+    checkbox.checked = loader.plugins.includes(file);
 
-  engine.bus.on("afterTick", engine => {
-    for (const e of engine.getEntitiesWith("ice", "position")) {
-      if (!e.components._iceDir) continue;
-      e.components.velocity.dx = e.components._iceDir.dx;
-      e.components.velocity.dy = e.components._iceDir.dy;
-    }
-  });
+    const label = document.createElement("label");
+    label.htmlFor = file;
+    label.textContent = file;
+    label.style.marginLeft = "6px";
 
-  engine.bus.on("entityBlocked", e => {
-    if (!e.components.ice) return;
-    e.components._iceDir = null;
-  });
-}
+    row.appendChild(checkbox);
+    row.appendChild(label);
+    guiList.appendChild(row);
 
-// --- MAP EDITOR ---
-export function MapEditorPlugin(engine) {
-  const canvas = document.getElementById("game");
-  let enabled = true;
-  let hoverCell = null;
-
-  canvas.addEventListener("mousemove", e => {
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((e.clientX - rect.left) / engine.tileSize);
-    const y = Math.floor((e.clientY - rect.top) / engine.tileSize);
-    hoverCell = { x, y };
-  });
-
-  canvas.addEventListener("mousedown", () => {
-    if (!enabled || !hoverCell) return;
-    toggleWall(engine, hoverCell.x, hoverCell.y);
-  });
-
-  window.addEventListener("keydown", e => {
-    if (e.key === "e") enabled = !enabled;
-  });
-
-  engine.bus.on("afterTick", () => {
-    engine._editorHover = hoverCell;
-    engine._editorEnabled = enabled;
-  });
-}
-
-function toggleWall(engine, x, y) {
-  const existing = engine.getEntitiesWith("position", "solid")
-    .find(e => e.components.position.x === x && e.components.position.y === y);
-
-  if (existing) engine.entities.delete(existing.id);
-  else engine.addEntity({
-    position: Position(x, y),
-    solid: Solid(),
-    renderable: Renderable("#555")
+    checkbox.addEventListener("change", async () => {
+      if (checkbox.checked) {
+        // Load plugin dynamically
+        if (!loader.plugins.includes(file)) {
+          try {
+            const module = await import(`./plugins/${file}`);
+            if (typeof module.default === "function") {
+              module.default(loader.engine);
+              loader.plugins.push(file);
+              console.log(`Plugin loaded: ${file}`);
+            }
+          } catch (err) {
+            console.error(`Failed to load plugin ${file}:`, err);
+          }
+        }
+      } else {
+        // Runtime disable is tricky; for now just uncheck
+        loader.plugins = loader.plugins.filter(p => p !== file);
+        console.log(`Plugin unchecked: ${file} (event listeners remain active)`);
+      }
+    });
   });
 }
 
@@ -242,6 +222,11 @@ engine.addSystem(FrictionSystem);
 
 const loader = new PluginLoader(engine);
 loader.loadAll().then(() => {
+  console.log("PlugnPlay ready, starting loop");
+
+  // Setup runtime plugin GUI
+  setupPluginGUI(loader);
+
   console.log("PlugnPlay ready, starting loop");
 
   // Borders
