@@ -178,7 +178,12 @@ async function setupPluginGUI(loader) {
         loader.plugins = loader.plugins.filter(p => p !== file);
         console.log(`Plugin unchecked: ${file} (reload required to fully disable)`);
       }
+
+      // Save state in localStorage
       savePlugins(loader.plugins);
+
+      // Show alert for reload
+      alert("Reload for changes to fully apply");
     });
   });
 }
