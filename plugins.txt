@@ -1,1 +1,2 @@
 IcePlugin.js
+MapEditorPlugin.js
