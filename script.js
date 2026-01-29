@@ -1,15 +1,12 @@
 // ================= PLUGNPLAY SCRIPT.JS =================
 
 // ================= ENGINE CORE =================
-
 class EventBus {
   constructor() { this.listeners = {}; }
-
   on(type, fn, priority = 0) {
     (this.listeners[type] ??= []).push({ fn, priority });
     this.listeners[type].sort((a, b) => b.priority - a.priority);
   }
-
   emit(type, data) {
     for (const { fn } of this.listeners[type] ?? []) fn(data);
   }
@@ -47,14 +44,12 @@ class Engine {
 }
 
 // ================= COMPONENTS =================
-
 const Position = (x, y) => ({ x, y });
 const Velocity = (dx, dy) => ({ dx, dy });
 const Renderable = (color) => ({ color });
 const Solid = () => ({});
 
 // ================= SYSTEMS =================
-
 const MovementSystem = {
   update(engine) {
     for (const e of engine.getEntitiesWith("position", "velocity")) {
@@ -96,7 +91,6 @@ function isBlocked(engine, x, y) {
 }
 
 // ================= PLUGIN LOADER =================
-
 class PluginLoader {
   constructor(engine, pluginTxtPath = "plugins.txt") {
     this.engine = engine;
@@ -104,20 +98,11 @@ class PluginLoader {
     this.plugins = [];
   }
 
-  async loadAll() {
+  async loadAll(savedPlugins = []) {
     const pluginFiles = await this.fetchPluginList();
     for (const file of pluginFiles) {
-      try {
-        const module = await import(`./plugins/${file}`);
-        if (typeof module.default === "function") {
-          module.default(this.engine);
-          this.plugins.push(file);
-        } else {
-          console.warn(`Plugin ${file} has no default export`);
-        }
-      } catch (err) {
-        console.error(`Failed to load plugin ${file}:`, err);
-      }
+      if (savedPlugins.length && !savedPlugins.includes(file)) continue;
+      await this.loadPlugin(file);
     }
     console.log("PlugnPlay loaded plugins:", this.plugins);
   }
@@ -133,18 +118,49 @@ class PluginLoader {
       return [];
     }
   }
+
+  async loadPlugin(file) {
+    try {
+      const module = await import(`./plugins/${file}`);
+      if (typeof module.default === "function") {
+        module.default(this.engine);
+        this.plugins.push(file);
+        console.log(`Plugin loaded: ${file}`);
+      } else {
+        console.warn(`Plugin ${file} has no default export`);
+      }
+    } catch (err) {
+      console.error(`Failed to load plugin ${file}:`, err);
+    }
+  }
 }
 
+// ================= LOCAL STORAGE =================
+function getSavedPlugins() {
+  try {
+    const saved = localStorage.getItem("plugnplay_enabled_plugins");
+    return saved ? JSON.parse(saved) : [];
+  } catch (e) { return []; }
+}
+
+function savePlugins(enabledPlugins) {
+  try {
+    localStorage.setItem("plugnplay_enabled_plugins", JSON.stringify(enabledPlugins));
+  } catch (e) { console.warn("Failed to save plugins"); }
+}
+
+// ================= PLUGIN GUI =================
 async function setupPluginGUI(loader) {
   const guiList = document.getElementById("plugin-list");
   const pluginFiles = await loader.fetchPluginList();
+  const savedPlugins = getSavedPlugins();
 
   pluginFiles.forEach(file => {
     const row = document.createElement("div");
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.id = file;
-    checkbox.checked = loader.plugins.includes(file);
+    checkbox.checked = savedPlugins.includes(file);
 
     const label = document.createElement("label");
     label.htmlFor = file;
@@ -157,30 +173,17 @@ async function setupPluginGUI(loader) {
 
     checkbox.addEventListener("change", async () => {
       if (checkbox.checked) {
-        // Load plugin dynamically
-        if (!loader.plugins.includes(file)) {
-          try {
-            const module = await import(`./plugins/${file}`);
-            if (typeof module.default === "function") {
-              module.default(loader.engine);
-              loader.plugins.push(file);
-              console.log(`Plugin loaded: ${file}`);
-            }
-          } catch (err) {
-            console.error(`Failed to load plugin ${file}:`, err);
-          }
-        }
+        await loader.loadPlugin(file);
       } else {
-        // Runtime disable is tricky; for now just uncheck
         loader.plugins = loader.plugins.filter(p => p !== file);
-        console.log(`Plugin unchecked: ${file} (event listeners remain active)`);
+        console.log(`Plugin unchecked: ${file} (reload required to fully disable)`);
       }
+      savePlugins(loader.plugins);
     });
   });
 }
 
 // ================= RENDERER =================
-
 function render(engine, ctx) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
@@ -211,8 +214,70 @@ function render(engine, ctx) {
   }
 }
 
-// ================= GAME SETUP =================
+// ================= PLUGINS =================
+// Ice sliding
+export function IcePlugin(engine) {
+  engine.bus.on("entityMoved", e => {
+    if (!e.components.ice) return;
+    const v = e.components.velocity;
+    e.components._iceDir = { dx: v.dx, dy: v.dy };
+  });
 
+  engine.bus.on("afterTick", engine => {
+    for (const e of engine.getEntitiesWith("ice", "position")) {
+      if (!e.components._iceDir) continue;
+      e.components.velocity.dx = e.components._iceDir.dx;
+      e.components.velocity.dy = e.components._iceDir.dy;
+    }
+  });
+
+  engine.bus.on("entityBlocked", e => {
+    if (!e.components.ice) return;
+    e.components._iceDir = null;
+  });
+}
+
+// Map editor
+export function MapEditorPlugin(engine) {
+  const canvas = document.getElementById("game");
+  let enabled = true;
+  let hoverCell = null;
+
+  canvas.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / engine.tileSize);
+    const y = Math.floor((e.clientY - rect.top) / engine.tileSize);
+    hoverCell = { x, y };
+  });
+
+  canvas.addEventListener("mousedown", () => {
+    if (!enabled || !hoverCell) return;
+    toggleWall(engine, hoverCell.x, hoverCell.y);
+  });
+
+  window.addEventListener("keydown", e => {
+    if (e.key === "e") enabled = !enabled;
+  });
+
+  engine.bus.on("afterTick", () => {
+    engine._editorHover = hoverCell;
+    engine._editorEnabled = enabled;
+  });
+}
+
+function toggleWall(engine, x, y) {
+  const existing = engine.getEntitiesWith("position", "solid")
+    .find(e => e.components.position.x === x && e.components.position.y === y);
+
+  if (existing) engine.entities.delete(existing.id);
+  else engine.addEntity({
+    position: Position(x, y),
+    solid: Solid(),
+    renderable: Renderable("#555")
+  });
+}
+
+// ================= GAME SETUP =================
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const engine = new Engine(16, 16, 32);
@@ -221,13 +286,10 @@ engine.addSystem(MovementSystem);
 engine.addSystem(FrictionSystem);
 
 const loader = new PluginLoader(engine);
-loader.loadAll().then(() => {
-  console.log("PlugnPlay ready, starting loop");
+const savedPlugins = getSavedPlugins();
 
-  // Setup runtime plugin GUI
+loader.loadAll(savedPlugins).then(() => {
   setupPluginGUI(loader);
-
-  console.log("PlugnPlay ready, starting loop");
 
   // Borders
   for (let i = 0; i < 16; i++) {
@@ -260,6 +322,5 @@ loader.loadAll().then(() => {
     render(engine, ctx);
     requestAnimationFrame(loop);
   }
-
   loop();
 });
