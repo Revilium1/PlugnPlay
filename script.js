@@ -338,6 +338,15 @@ window.onkeydown = e => {
   if (e.key === "ArrowRight") p.input.dx = 1;
 };
 
+// ================= PLUGINS =================
+const loader = new PluginLoader(engine);
+
+(async () => {
+  const saved = getSavedPlugins();
+  await loader.loadAll(saved);
+  await setupPluginGUI(loader);
+})();
+
 // ================= MAIN LOOP =================
 (function loop() {
   engine.tick(1);
