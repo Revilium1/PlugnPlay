@@ -316,9 +316,14 @@ const loader = new PluginLoader(engine);
 
 (async () => {
   const saved = getSavedPlugins();
-  await loader.loadAll(saved);   // loads + auto-saves
+
+  // 1. Load plugins first
+  await loader.loadAll(saved); // ensures loader.plugins is up-to-date
+
+  // 2. Then setup GUI with correct checkbox state
   await setupPluginGUI(loader);
 })();
+
 
 
 // Main loop
