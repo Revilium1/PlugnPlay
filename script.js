@@ -140,6 +140,43 @@ class PluginLoader {
   }
 }
 
+// ================= PLUGIN GUI =================
+async function setupPluginGUI(loader) {
+  const guiList = document.getElementById("plugin-list");
+  guiList.innerHTML = "";
+
+  const pluginFiles = await loader.fetchPluginList();
+  const savedPlugins = getSavedPlugins();
+
+  pluginFiles.forEach(file => {
+    const row = document.createElement("div");
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.id = file;
+    checkbox.checked = loader.plugins.includes(file);
+
+    const label = document.createElement("label");
+    label.htmlFor = file;
+    label.textContent = file;
+    label.style.marginLeft = "6px";
+
+    row.appendChild(checkbox);
+    row.appendChild(label);
+    guiList.appendChild(row);
+
+    checkbox.addEventListener("change", async () => {
+      if (checkbox.checked) {
+        if (!loader.plugins.includes(file)) await loader.loadPlugin(file);
+      } else {
+        loader.plugins = loader.plugins.filter(p => p !== file);
+        alert("Plugin unchecked. Reload page to fully remove its effects.");
+      }
+      savePlugins(loader.plugins);
+    });
+  });
+}
+
 // ================= BUILT-IN MAP EDITOR + HOTBAR =================
 function setupEditor(engine, canvas) {
   let enabled = true;
@@ -155,7 +192,6 @@ function setupEditor(engine, canvas) {
   hotbar.style.gap = "4px";
   document.body.appendChild(hotbar);
 
-  // render hotbar buttons
   function refreshHotbar() {
     hotbar.innerHTML = "";
     Tiles.forEach(tile => {
@@ -218,6 +254,19 @@ function render(engine, ctx) {
   }
 }
 
+// ================= LOCAL STORAGE =================
+function getSavedPlugins() {
+  try {
+    const saved = localStorage.getItem("plugnplay_enabled_plugins");
+    return saved ? JSON.parse(saved) : [];
+  } catch { return []; }
+}
+
+function savePlugins(enabledPlugins) {
+  try { localStorage.setItem("plugnplay_enabled_plugins", JSON.stringify(enabledPlugins)); }
+  catch { console.warn("Failed to save plugins"); }
+}
+
 // ================= GAME SETUP =================
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
@@ -249,16 +298,13 @@ window.addEventListener("keydown", e => {
 
 // Plugin loader
 const loader = new PluginLoader(engine);
-loader.loadAll([]);
+loader.loadAll(getSavedPlugins()).then(() => setupPluginGUI(loader));
 
 // Main loop
 function loop() {
   engine.tick(1);
-
-  // apply input-driven movement
   MovementSystem.update(engine);
   render(engine, ctx);
-
   requestAnimationFrame(loop);
 }
 loop();
