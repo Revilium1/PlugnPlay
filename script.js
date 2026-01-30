@@ -12,6 +12,18 @@ class EventBus {
   }
 }
 
+// ================= TILE REGISTRY =================
+const Tiles = [];
+
+function registerTile(tile) {
+  // tile = { id, name, color, solid, pluginOrigin? }
+  Tiles.push(tile);
+}
+
+// register core tiles
+registerTile({ id: "wall", name: "Wall", color: "#555", solid: true });
+registerTile({ id: "floor", name: "Floor", color: "#aaa", solid: false });
+
 // ================= GRID ENGINE =================
 class GridEngine {
   constructor(w, h, tileSize) {
@@ -28,7 +40,7 @@ class GridEngine {
   addSystem(sys) { this.systems.push(sys); }
 
   addEntity(data, x, y) {
-    if (this.grid[y][x]) return null; // prevent overwriting
+    if (this.grid[y][x]) this.removeEntity(this.grid[y][x].id);
     const id = this.nextId++;
     const e = { id, x, y, ...data };
     this.entities.set(id, e);
@@ -49,10 +61,10 @@ class GridEngine {
 
     const nx = e.x + dx;
     const ny = e.y + dy;
+
     if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
 
     const target = this.grid[ny][nx];
-
     if (target?.solid) {
       this.bus.emit("entityBlocked", e);
       return false;
@@ -83,7 +95,7 @@ const MovementSystem = {
   update(engine) {
     if (input.dx !== 0 || input.dy !== 0) {
       engine.moveEntity(player, input.dx, input.dy);
-      input.dx = 0; // reset after move
+      input.dx = 0;
       input.dy = 0;
     }
   }
@@ -129,10 +141,39 @@ class PluginLoader {
   }
 }
 
-// ================= BUILT-IN MAP EDITOR =================
+// ================= BUILT-IN MAP EDITOR + HOTBAR =================
 function setupEditor(engine, canvas) {
   let enabled = true;
   let hover = null;
+  let selectedTile = Tiles[0]; // default selection
+
+  // hotbar container
+  const hotbar = document.createElement("div");
+  hotbar.style.position = "absolute";
+  hotbar.style.bottom = "10px";
+  hotbar.style.left = "10px";
+  hotbar.style.display = "flex";
+  hotbar.style.gap = "4px";
+  document.body.appendChild(hotbar);
+
+  // render hotbar buttons
+  function refreshHotbar() {
+    hotbar.innerHTML = "";
+    Tiles.forEach(tile => {
+      const btn = document.createElement("div");
+      btn.style.width = "32px";
+      btn.style.height = "32px";
+      btn.style.backgroundColor = tile.color;
+      btn.style.border = tile === selectedTile ? "2px solid #0f0" : "1px solid #000";
+      btn.title = tile.name;
+      btn.addEventListener("click", () => {
+        selectedTile = tile;
+        refreshHotbar();
+      });
+      hotbar.appendChild(btn);
+    });
+  }
+  refreshHotbar();
 
   canvas.addEventListener("mousemove", e => {
     const rect = canvas.getBoundingClientRect();
@@ -143,13 +184,8 @@ function setupEditor(engine, canvas) {
   });
 
   canvas.addEventListener("mousedown", () => {
-    if (!enabled || !hover) return;
-    const existing = engine.getEntityAt(hover.x, hover.y);
-    if (existing?.solid) {
-      engine.removeEntity(existing.id);
-    } else {
-      engine.addEntity({ solid: true, color: "#555" }, hover.x, hover.y);
-    }
+    if (!enabled || !hover || !selectedTile) return;
+    engine.addEntity({ ...selectedTile }, hover.x, hover.y);
   });
 
   window.addEventListener("keydown", e => {
@@ -201,14 +237,10 @@ for (let i = 0; i < 16; i++) {
 }
 
 // Player
-const player = engine.addEntity({
-  color: "#4af",
-  velocity: { dx: 0, dy: 0 }
-}, 3, 3);
+const player = engine.addEntity({ color: "#4af" }, 3, 3);
 
 // Input
 const input = { dx: 0, dy: 0 };
-
 window.addEventListener("keydown", e => {
   if (e.key === "ArrowUp") input.dx = 0, input.dy = -1;
   if (e.key === "ArrowDown") input.dx = 0, input.dy = 1;
@@ -216,14 +248,18 @@ window.addEventListener("keydown", e => {
   if (e.key === "ArrowRight") input.dx = 1, input.dy = 0;
 });
 
-// Plugin system
+// Plugin loader
 const loader = new PluginLoader(engine);
 loader.loadAll([]);
 
 // Main loop
 function loop() {
   engine.tick(1);
+
+  // apply input-driven movement
+  MovementSystem.update(engine);
   render(engine, ctx);
+
   requestAnimationFrame(loop);
 }
 loop();
