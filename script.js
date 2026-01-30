@@ -3,24 +3,32 @@
 // ================= EVENT BUS =================
 class EventBus {
   constructor() { this.listeners = {}; }
+
   on(type, fn, priority = 0) {
     (this.listeners[type] ??= []).push({ fn, priority });
     this.listeners[type].sort((a, b) => b.priority - a.priority);
   }
+
+  off(type, fn) {
+    this.listeners[type] =
+      (this.listeners[type] ?? []).filter(l => l.fn !== fn);
+  }
+
   emit(type, data) {
     for (const { fn } of this.listeners[type] ?? []) fn(data);
   }
 }
 
 // ================= TILE REGISTRY =================
-const Tiles = [];
+const Tiles = new Map();
 
 function registerTile(tile) {
-  // tile = { id, name, color, solid, pluginOrigin? }
-  Tiles.push(tile);
+  // tile = { id, name, color, solid }
+  if (!tile.id) throw new Error("Tile requires id");
+  Tiles.set(tile.id, Object.freeze({ ...tile }));
 }
 
-// register core tiles
+// core tile
 registerTile({ id: "wall", name: "Wall", color: "#555", solid: true });
 
 // ================= GRID ENGINE =================
@@ -34,12 +42,17 @@ class GridEngine {
     this.systems = [];
     this.bus = new EventBus();
     this.nextId = 1;
+
+    this.editor = { enabled: true, hover: null };
   }
 
   addSystem(sys) { this.systems.push(sys); }
 
   addEntity(data, x, y) {
+    if (this.grid[y][x]?.locked) return null;
+
     if (this.grid[y][x]) this.removeEntity(this.grid[y][x].id);
+
     const id = this.nextId++;
     const e = { id, x, y, ...data };
     this.entities.set(id, e);
@@ -78,11 +91,6 @@ class GridEngine {
     return true;
   }
 
-  getEntityAt(x, y) {
-    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
-    return this.grid[y][x];
-  }
-
   tick(dt) {
     for (const sys of this.systems) sys.update(this, dt);
     this.bus.emit("afterTick", this);
@@ -92,10 +100,13 @@ class GridEngine {
 // ================= SYSTEMS =================
 const MovementSystem = {
   update(engine) {
-    if (input.dx !== 0 || input.dy !== 0) {
-      engine.moveEntity(player, input.dx, input.dy);
-      input.dx = 0;
-      input.dy = 0;
+    for (const e of engine.entities.values()) {
+      if (!e.input) continue;
+      if (e.input.dx || e.input.dy) {
+        engine.moveEntity(e.id, e.input.dx, e.input.dy);
+        e.input.dx = 0;
+        e.input.dy = 0;
+      }
     }
   }
 };
@@ -105,7 +116,7 @@ class PluginLoader {
   constructor(engine, path = "plugins.txt") {
     this.engine = engine;
     this.path = path;
-    this.plugins = [];
+    this.plugins = new Map(); // file → cleanup fn
   }
 
   async fetchPluginList() {
@@ -119,168 +130,149 @@ class PluginLoader {
   }
 
   async loadPlugin(file) {
-    if (this.plugins.includes(file)) return;
-    try {
-      const module = await import(`./plugins/${file}`);
-      if (typeof module.default === "function") {
-        module.default(this.engine);
-        this.plugins.push(file);
-        console.log("Plugin loaded:", file);
-      }
-    } catch (err) {
-      console.error(`Failed to load plugin ${file}:`, err);
+    if (this.plugins.has(file)) return;
+
+    const module = await import(`./plugins/${file}`);
+    const cleanup = module.default?.(this.engine);
+    this.plugins.set(file, cleanup ?? null);
+    console.log("Plugin loaded:", file);
+  }
+
+  unloadPlugin(file) {
+    const cleanup = this.plugins.get(file);
+    if (typeof cleanup === "function") cleanup();
+    this.plugins.delete(file);
+    console.log("Plugin unloaded:", file);
+  }
+
+  async loadAll(saved = []) {
+    const files = await this.fetchPluginList();
+    const enabled = saved.length ? saved : files;
+
+    for (const f of files) {
+      if (enabled.includes(f)) await this.loadPlugin(f);
     }
+    savePlugins([...this.plugins.keys()]);
   }
-
-  async loadAll(savedPlugins = []) {
-  const files = await this.fetchPluginList();
-
-  // If nothing saved yet → treat all plugins in plugins.txt as enabled
-  const effectiveList = savedPlugins.length ? savedPlugins : files;
-
-  for (const f of files) {
-    if (!effectiveList.includes(f)) continue;
-    await this.loadPlugin(f);
-  }
-
-  // CRITICAL: persist what actually loaded
-  savePlugins(this.plugins);
-}
-
 }
 
 // ================= PLUGIN GUI =================
 async function setupPluginGUI(loader) {
-  const guiList = document.getElementById("plugin-list");
-  guiList.innerHTML = "";
+  const gui = document.getElementById("plugin-list");
+  gui.innerHTML = "";
 
-  const pluginFiles = await loader.fetchPluginList();
-  const savedPlugins = getSavedPlugins();
+  const files = await loader.fetchPluginList();
+  const saved = getSavedPlugins();
 
-  pluginFiles.forEach(file => {
+  files.forEach(file => {
     const row = document.createElement("div");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = saved.includes(file);
 
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.id = file;
-    checkbox.checked = loader.plugins.includes(file);
+    cb.onchange = async () => {
+      let enabled = getSavedPlugins();
+      if (cb.checked) {
+        await loader.loadPlugin(file);
+        enabled.push(file);
+      } else {
+        loader.unloadPlugin(file);
+        enabled = enabled.filter(p => p !== file);
+      }
+      savePlugins(enabled);
+    };
 
-    const label = document.createElement("label");
-    label.htmlFor = file;
-    label.textContent = file;
-    label.style.marginLeft = "6px";
-
-    row.appendChild(checkbox);
-    row.appendChild(label);
-    guiList.appendChild(row);
-
-    checkbox.addEventListener("change", async () => {
-  let enabled = getSavedPlugins();
-
-  if (checkbox.checked) {
-    await loader.loadPlugin(file);
-    if (!enabled.includes(file)) enabled.push(file);
-  } else {
-    enabled = enabled.filter(p => p !== file);
-    loader.plugins = loader.plugins.filter(p => p !== file);
-    console.log(`Plugin disabled: ${file} (reload to fully unload)`);
-  }
-
-  savePlugins(enabled);
-});
-
+    row.append(cb, document.createTextNode(" " + file));
+    gui.appendChild(row);
   });
 }
 
-// ================= BUILT-IN MAP EDITOR + HOTBAR =================
+// ================= EDITOR =================
 function setupEditor(engine, canvas) {
-  let enabled = true;
-  let hover = null;
-  let selectedTile = Tiles[0]; // default selection
-
-  // hotbar container
   const hotbar = document.createElement("div");
-  hotbar.style.position = "absolute";
-  hotbar.style.bottom = "10px";
-  hotbar.style.left = "10px";
-  hotbar.style.display = "flex";
-  hotbar.style.gap = "4px";
+  Object.assign(hotbar.style, {
+    position: "absolute",
+    bottom: "10px",
+    left: "10px",
+    display: "flex",
+    gap: "4px"
+  });
   document.body.appendChild(hotbar);
 
-  function refreshHotbar() {
+  let selectedTile = [...Tiles.values()][0];
+
+  function refresh() {
     hotbar.innerHTML = "";
     Tiles.forEach(tile => {
-      const btn = document.createElement("div");
-      btn.style.width = "32px";
-      btn.style.height = "32px";
-      btn.style.backgroundColor = tile.color;
-      btn.style.border = tile === selectedTile ? "2px solid #0f0" : "1px solid #000";
-      btn.title = tile.name;
-      btn.addEventListener("click", () => {
-        selectedTile = tile;
-        refreshHotbar();
+      const b = document.createElement("div");
+      Object.assign(b.style, {
+        width: "32px",
+        height: "32px",
+        background: tile.color,
+        border: tile === selectedTile ? "2px solid #0f0" : "1px solid #000"
       });
-      hotbar.appendChild(btn);
+      b.onclick = () => { selectedTile = tile; refresh(); };
+      hotbar.appendChild(b);
     });
   }
-  refreshHotbar();
+  refresh();
 
-  canvas.addEventListener("mousemove", e => {
-    const rect = canvas.getBoundingClientRect();
-    hover = {
-      x: Math.floor((e.clientX - rect.left) / engine.tileSize),
-      y: Math.floor((e.clientY - rect.top) / engine.tileSize)
+  canvas.onmousemove = e => {
+    const r = canvas.getBoundingClientRect();
+    engine.editor.hover = {
+      x: Math.floor((e.clientX - r.left) / engine.tileSize),
+      y: Math.floor((e.clientY - r.top) / engine.tileSize)
     };
-  });
+  };
 
-  canvas.addEventListener("mousedown", () => {
-    if (!enabled || !hover || !selectedTile) return;
-    engine.addEntity({ ...selectedTile }, hover.x, hover.y);
-  });
+  canvas.onmousedown = () => {
+    if (!engine.editor.enabled || !engine.editor.hover) return;
+    engine.addEntity({
+      tileId: selectedTile.id,
+      color: selectedTile.color,
+      solid: selectedTile.solid
+    }, engine.editor.hover.x, engine.editor.hover.y);
+  };
 
-  window.addEventListener("keydown", e => {
-    if (e.key === "e") enabled = !enabled;
-  });
-
-  engine.bus.on("afterTick", () => {
-    engine._editorHover = hover;
-    engine._editorEnabled = enabled;
-  });
+  window.onkeydown = e => {
+    if (e.key === "e") engine.editor.enabled = !engine.editor.enabled;
+  };
 }
 
 // ================= RENDERER =================
 function render(engine, ctx) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-  for (let y = 0; y < engine.h; y++) {
-    for (let x = 0; x < engine.w; x++) {
-      const e = engine.grid[y][x];
-      if (!e || !e.color) continue;
-      ctx.fillStyle = e.color;
-      ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
-    }
+  for (const e of engine.entities.values()) {
+    if (!e.color) continue;
+    ctx.fillStyle = e.color;
+    ctx.fillRect(
+      e.x * engine.tileSize,
+      e.y * engine.tileSize,
+      engine.tileSize,
+      engine.tileSize
+    );
   }
 
-  if (engine._editorEnabled && engine._editorHover) {
-    const { x, y } = engine._editorHover;
+  const h = engine.editor.hover;
+  if (engine.editor.enabled && h) {
     ctx.strokeStyle = "#0f0";
     ctx.lineWidth = 2;
-    ctx.strokeRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
+    ctx.strokeRect(
+      h.x * engine.tileSize,
+      h.y * engine.tileSize,
+      engine.tileSize,
+      engine.tileSize
+    );
   }
 }
 
-// ================= LOCAL STORAGE =================
-function getSavedPlugins() {
-  try {
-    const saved = localStorage.getItem("plugnplay_enabled_plugins");
-    return saved ? JSON.parse(saved) : [];
-  } catch { return []; }
-}
+// ================= STORAGE =================
+const getSavedPlugins = () =>
+  JSON.parse(localStorage.getItem("plugnplay_enabled_plugins") ?? "[]");
 
-function savePlugins(enabledPlugins) {
-  try { localStorage.setItem("plugnplay_enabled_plugins", JSON.stringify(enabledPlugins)); }
-  catch { console.warn("Failed to save plugins"); }
-}
+const savePlugins = list =>
+  localStorage.setItem("plugnplay_enabled_plugins", JSON.stringify(list));
 
 // ================= GAME SETUP =================
 const canvas = document.getElementById("game");
@@ -288,49 +280,43 @@ const ctx = canvas.getContext("2d");
 const engine = new GridEngine(16, 16, 32);
 
 engine.addSystem(MovementSystem);
-
 setupEditor(engine, canvas);
 
-// Borders
+// borders
 for (let i = 0; i < 16; i++) {
-  engine.addEntity({ solid: true, color: "#555" }, i, 0);
-  engine.addEntity({ solid: true, color: "#555" }, i, 15);
-  engine.addEntity({ solid: true, color: "#555" }, 0, i);
-  engine.addEntity({ solid: true, color: "#555" }, 15, i);
+  engine.addEntity({ solid: true, color: "#555", locked: true }, i, 0);
+  engine.addEntity({ solid: true, color: "#555", locked: true }, i, 15);
+  engine.addEntity({ solid: true, color: "#555", locked: true }, 0, i);
+  engine.addEntity({ solid: true, color: "#555", locked: true }, 15, i);
 }
 
-// Player
-const player = engine.addEntity({ color: "#4af" }, 3, 3);
+// player
+const playerId = engine.addEntity({
+  color: "#4af",
+  input: { dx: 0, dy: 0 },
+  locked: true
+}, 3, 3);
 
-// Input
-const input = { dx: 0, dy: 0 };
-window.addEventListener("keydown", e => {
-  if (e.key === "ArrowUp") input.dx = 0, input.dy = -1;
-  if (e.key === "ArrowDown") input.dx = 0, input.dy = 1;
-  if (e.key === "ArrowLeft") input.dx = -1, input.dy = 0;
-  if (e.key === "ArrowRight") input.dx = 1, input.dy = 0;
-});
+// input
+window.onkeydown = e => {
+  const p = engine.entities.get(playerId);
+  if (!p) return;
+  if (e.key === "ArrowUp") p.input.dy = -1;
+  if (e.key === "ArrowDown") p.input.dy = 1;
+  if (e.key === "ArrowLeft") p.input.dx = -1;
+  if (e.key === "ArrowRight") p.input.dx = 1;
+};
 
-// Plugin loader
+// plugins
 const loader = new PluginLoader(engine);
-
 (async () => {
-  const saved = getSavedPlugins();
-
-  // 1. Load plugins first
-  await loader.loadAll(saved); // ensures loader.plugins is up-to-date
-
-  // 2. Then setup GUI with correct checkbox state
+  await loader.loadAll(getSavedPlugins());
   await setupPluginGUI(loader);
 })();
 
-
-
-// Main loop
-function loop() {
+// loop
+(function loop() {
   engine.tick(1);
-  MovementSystem.update(engine);
   render(engine, ctx);
   requestAnimationFrame(loop);
-}
-loop();
+})();
