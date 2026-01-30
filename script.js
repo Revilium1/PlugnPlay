@@ -30,73 +30,98 @@ class GridEngine {
     this.w = w;
     this.h = h;
     this.tileSize = tileSize;
-    this.grid = Array.from({ length: h }, () => Array(w).fill(null));
-    this.entities = new Map();
+
+    // Each cell holds layers: ground (tiles) and actor (player/creatures)
+    this.grid = Array.from({ length: h }, () =>
+      Array.from({ length: w }, () => ({ ground: null, actor: null }))
+    );
+
+    this.entities = new Map(); // all entities
     this.systems = [];
     this.bus = new EventBus();
     this.nextId = 1;
   }
 
-  addSystem(sys) { this.systems.push(sys); }
+  // Add a system (like MovementSystem)
+  addSystem(sys) {
+    this.systems.push(sys);
+  }
 
+  // Add an entity to a specific layer
   addEntity(data, x, y) {
-    if (this.grid[y][x]) this.removeEntity(this.grid[y][x].id);
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
+
     const id = this.nextId++;
     const e = { id, x, y, ...data };
     this.entities.set(id, e);
-    this.grid[y][x] = e;
+
+    const cell = this.grid[y][x];
+
+    // Decide which layer
+    if (e.solid) {
+      cell.ground = e; // solid tiles go to ground
+    } else {
+      cell.actor = e; // player/actors go to actor
+    }
+
     return id;
   }
 
+  // Remove entity from grid and map
   removeEntity(id) {
     const e = this.entities.get(id);
     if (!e) return;
-    this.grid[e.y][e.x] = null;
+
+    const cell = this.grid[e.y][e.x];
+    if (cell.ground === e) cell.ground = null;
+    if (cell.actor === e) cell.actor = null;
+
     this.entities.delete(id);
   }
 
+  // Move an actor entity (dx, dy)
   moveEntity(id, dx, dy) {
-  const e = this.entities.get(id);
-  if (!e) return false;
+    const e = this.entities.get(id);
+    if (!e) return false;
 
-  const nx = e.x + dx;
-  const ny = e.y + dy;
+    const nx = e.x + dx;
+    const ny = e.y + dy;
 
-  if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
+    if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
 
-  const target = this.grid[ny][nx];
+    const targetCell = this.grid[ny][nx];
 
-  // only block if solid
-  if (target?.solid) {
-    this.bus.emit("entityBlocked", e);
-    return false;
+    // Block if solid ground exists
+    if (targetCell.ground?.solid) {
+      this.bus.emit("entityBlocked", e);
+      return false;
+    }
+
+    // Remove actor from old cell
+    const oldCell = this.grid[e.y][e.x];
+    if (oldCell.actor === e) oldCell.actor = null;
+
+    // Move actor to new cell
+    e.x = nx;
+    e.y = ny;
+    targetCell.actor = e;
+
+    this.bus.emit("entityMoved", e);
+    return true;
   }
 
-  // remove only **solid** entities, leave non-solid (like floors)
-  if (target?.solid) this.removeEntity(target.id);
-
-  this.grid[e.y][e.x] = null;
-  e.x = nx;
-  e.y = ny;
-
-  // if there is a non-solid entity in the new cell, don't overwrite
-  if (!target?.solid) {
-    this.grid[ny][nx] = e; // player moves in
-  } else {
-    this.grid[ny][nx] = e;
-  }
-
-  this.bus.emit("entityMoved", e);
-  return true;
-}
-
+  // Get entity at a position (checks actor first, then ground)
   getEntityAt(x, y) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
-    return this.grid[y][x];
+    const cell = this.grid[y][x];
+    return cell.actor ?? cell.ground ?? null;
   }
 
+  // Run all systems for this tick
   tick(dt) {
-    for (const sys of this.systems) sys.update(this, dt);
+    for (const sys of this.systems) {
+      sys.update(this, dt);
+    }
     this.bus.emit("afterTick", this);
   }
 }
@@ -214,13 +239,20 @@ function render(engine, ctx) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
   for (let y = 0; y < engine.h; y++) {
-    for (let x = 0; x < engine.w; x++) {
-      const e = engine.grid[y][x];
-      if (!e || !e.color) continue;
-      ctx.fillStyle = e.color;
+  for (let x = 0; x < engine.w; x++) {
+    const cell = engine.grid[y][x];
+    // draw ground first
+    if (cell.ground && cell.ground.color) {
+      ctx.fillStyle = cell.ground.color;
+      ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
+    }
+    // then actor layer
+    if (cell.actor && cell.actor.color) {
+      ctx.fillStyle = cell.actor.color;
       ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
     }
   }
+}
 
   if (engine._editorEnabled && engine._editorHover) {
     const { x, y } = engine._editorHover;
