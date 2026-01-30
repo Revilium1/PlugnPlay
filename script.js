@@ -298,7 +298,17 @@ window.addEventListener("keydown", e => {
 
 // Plugin loader
 const loader = new PluginLoader(engine);
-loader.loadAll(getSavedPlugins()).then(() => setupPluginGUI(loader));
+const savedPlugins = getSavedPlugins();
+
+loader.fetchPluginList().then(files => {
+  // Load only the plugins that exist in plugins.txt AND are saved in localStorage
+  const toLoad = files.filter(f => savedPlugins.includes(f));
+  loader.loadAll(toLoad).then(() => {
+    // Save what actually got loaded
+    savePlugins(loader.plugins);
+    setupPluginGUI(loader);
+  });
+});
 
 // Main loop
 function loop() {
