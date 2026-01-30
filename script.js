@@ -14,13 +14,9 @@ class EventBus {
 
 // ================= TILE REGISTRY =================
 const Tiles = [];
+function registerTile(tile) { Tiles.push(tile); }
 
-function registerTile(tile) {
-  // tile = { id, name, color, solid, pluginOrigin? }
-  Tiles.push(tile);
-}
-
-// register core tiles
+// Core tiles
 registerTile({ id: "wall", name: "Wall", color: "#555", solid: true });
 registerTile({ id: "floor", name: "Floor", color: "#aaa", solid: false });
 
@@ -31,23 +27,19 @@ class GridEngine {
     this.h = h;
     this.tileSize = tileSize;
 
-    // Each cell holds layers: ground (tiles) and actor (player/creatures)
+    // Each cell holds ground and actor layers
     this.grid = Array.from({ length: h }, () =>
       Array.from({ length: w }, () => ({ ground: null, actor: null }))
     );
 
-    this.entities = new Map(); // all entities
+    this.entities = new Map();
     this.systems = [];
     this.bus = new EventBus();
     this.nextId = 1;
   }
 
-  // Add a system (like MovementSystem)
-  addSystem(sys) {
-    this.systems.push(sys);
-  }
+  addSystem(sys) { this.systems.push(sys); }
 
-  // Add an entity to a specific layer
   addEntity(data, x, y) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
 
@@ -56,18 +48,12 @@ class GridEngine {
     this.entities.set(id, e);
 
     const cell = this.grid[y][x];
-
-    // Decide which layer
-    if (e.solid) {
-      cell.ground = e; // solid tiles go to ground
-    } else {
-      cell.actor = e; // player/actors go to actor
-    }
+    if (e.solid) cell.ground = e;
+    else cell.actor = e;
 
     return id;
   }
 
-  // Remove entity from grid and map
   removeEntity(id) {
     const e = this.entities.get(id);
     if (!e) return;
@@ -79,49 +65,36 @@ class GridEngine {
     this.entities.delete(id);
   }
 
-  // Move an actor entity (dx, dy)
   moveEntity(id, dx, dy) {
     const e = this.entities.get(id);
     if (!e) return false;
 
     const nx = e.x + dx;
     const ny = e.y + dy;
-
     if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
 
-    const targetCell = this.grid[ny][nx];
+    const target = this.grid[ny][nx];
+    if (target.ground?.solid) return false;
 
-    // Block if solid ground exists
-    if (targetCell.ground?.solid) {
-      this.bus.emit("entityBlocked", e);
-      return false;
-    }
-
-    // Remove actor from old cell
     const oldCell = this.grid[e.y][e.x];
     if (oldCell.actor === e) oldCell.actor = null;
 
-    // Move actor to new cell
     e.x = nx;
     e.y = ny;
-    targetCell.actor = e;
+    target.actor = e;
 
     this.bus.emit("entityMoved", e);
     return true;
   }
 
-  // Get entity at a position (checks actor first, then ground)
   getEntityAt(x, y) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
     const cell = this.grid[y][x];
     return cell.actor ?? cell.ground ?? null;
   }
 
-  // Run all systems for this tick
   tick(dt) {
-    for (const sys of this.systems) {
-      sys.update(this, dt);
-    }
+    for (const sys of this.systems) sys.update(this, dt);
     this.bus.emit("afterTick", this);
   }
 }
@@ -150,9 +123,7 @@ class PluginLoader {
       const res = await fetch(this.path);
       const text = await res.text();
       return text.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
-    } catch {
-      return [];
-    }
+    } catch { return []; }
   }
 
   async loadPlugin(file) {
@@ -163,9 +134,7 @@ class PluginLoader {
         this.plugins.push(file);
         console.log("Plugin loaded:", file);
       }
-    } catch (err) {
-      console.error(`Failed to load plugin ${file}:`, err);
-    }
+    } catch (err) { console.error(`Failed to load plugin ${file}:`, err); }
   }
 
   async loadAll(saved = []) {
@@ -181,9 +150,9 @@ class PluginLoader {
 function setupEditor(engine, canvas) {
   let enabled = true;
   let hover = null;
-  let selectedTile = Tiles[0]; // default selection
+  let selectedTile = Tiles[0];
 
-  // hotbar container
+  // Hotbar container
   const hotbar = document.createElement("div");
   hotbar.style.position = "absolute";
   hotbar.style.bottom = "10px";
@@ -192,7 +161,6 @@ function setupEditor(engine, canvas) {
   hotbar.style.gap = "4px";
   document.body.appendChild(hotbar);
 
-  // render hotbar buttons
   function refreshHotbar() {
     hotbar.innerHTML = "";
     Tiles.forEach(tile => {
@@ -202,10 +170,7 @@ function setupEditor(engine, canvas) {
       btn.style.backgroundColor = tile.color;
       btn.style.border = tile === selectedTile ? "2px solid #0f0" : "1px solid #000";
       btn.title = tile.name;
-      btn.addEventListener("click", () => {
-        selectedTile = tile;
-        refreshHotbar();
-      });
+      btn.addEventListener("click", () => { selectedTile = tile; refreshHotbar(); });
       hotbar.appendChild(btn);
     });
   }
@@ -221,12 +186,16 @@ function setupEditor(engine, canvas) {
 
   canvas.addEventListener("mousedown", () => {
     if (!enabled || !hover || !selectedTile) return;
+
+    const cell = engine.grid[hover.y][hover.x];
+
+    // Don't overwrite player (actor layer)
+    if (cell.actor) return;
+
     engine.addEntity({ ...selectedTile }, hover.x, hover.y);
   });
 
-  window.addEventListener("keydown", e => {
-    if (e.key === "e") enabled = !enabled;
-  });
+  window.addEventListener("keydown", e => { if (e.key === "e") enabled = !enabled; });
 
   engine.bus.on("afterTick", () => {
     engine._editorHover = hover;
@@ -239,20 +208,18 @@ function render(engine, ctx) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
   for (let y = 0; y < engine.h; y++) {
-  for (let x = 0; x < engine.w; x++) {
-    const cell = engine.grid[y][x];
-    // draw ground first
-    if (cell.ground && cell.ground.color) {
-      ctx.fillStyle = cell.ground.color;
-      ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
-    }
-    // then actor layer
-    if (cell.actor && cell.actor.color) {
-      ctx.fillStyle = cell.actor.color;
-      ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
+    for (let x = 0; x < engine.w; x++) {
+      const cell = engine.grid[y][x];
+      if (cell.ground && cell.ground.color) {
+        ctx.fillStyle = cell.ground.color;
+        ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
+      }
+      if (cell.actor && cell.actor.color) {
+        ctx.fillStyle = cell.actor.color;
+        ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
+      }
     }
   }
-}
 
   if (engine._editorEnabled && engine._editorHover) {
     const { x, y } = engine._editorHover;
@@ -298,11 +265,8 @@ loader.loadAll([]);
 // Main loop
 function loop() {
   engine.tick(1);
-
-  // apply input-driven movement
   MovementSystem.update(engine);
   render(engine, ctx);
-
   requestAnimationFrame(loop);
 }
 loop();
