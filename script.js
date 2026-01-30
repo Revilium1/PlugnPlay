@@ -105,6 +105,56 @@ const IceSystem = {
   }
 };
 
+// ================= PLUGIN LOADER =================
+class PluginLoader {
+  constructor(engine, path = "plugins.txt") {
+    this.engine = engine;
+    this.path = path;
+    this.loaded = new Map(); // file → cleanup
+  }
+
+  async fetchPluginList() {
+    try {
+      const res = await fetch(this.path);
+      const text = await res.text();
+      return text
+        .split("\n")
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith("#"));
+    } catch {
+      return [];
+    }
+  }
+
+  async loadPlugin(file) {
+    if (this.loaded.has(file)) return;
+
+    const module = await import(`./plugins/${file}`);
+    const cleanup = module.default?.(this.engine);
+    this.loaded.set(file, cleanup ?? null);
+
+    console.log("Plugin loaded:", file);
+  }
+
+  unloadPlugin(file) {
+    const cleanup = this.loaded.get(file);
+    if (typeof cleanup === "function") cleanup();
+    this.loaded.delete(file);
+    console.log("Plugin unloaded:", file);
+  }
+
+  async loadAll(saved = []) {
+    const files = await this.fetchPluginList();
+    const enabled = saved.length ? saved : files;
+
+    for (const f of files) {
+      if (enabled.includes(f)) await this.loadPlugin(f);
+    }
+
+    savePlugins([...this.loaded.keys()]);
+  }
+}
+
 // ================= EDITOR =================
 function setupEditor(engine, canvas) {
   let selectedTile = [...Tiles.values()][0];
@@ -195,6 +245,59 @@ function render(engine, ctx) {
       engine.tileSize
     );
   }
+}
+
+// ================= PLUGIN GUI =================
+async function setupPluginGUI(loader) {
+  const gui = document.getElementById("plugin-list");
+  gui.innerHTML = "";
+
+  const files = await loader.fetchPluginList();
+  let enabled = getSavedPlugins();
+
+  files.forEach(file => {
+    const row = document.createElement("div");
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = enabled.includes(file);
+
+    const label = document.createElement("label");
+    label.textContent = " " + file;
+
+    cb.onchange = async () => {
+      if (cb.checked) {
+        await loader.loadPlugin(file);
+        enabled.push(file);
+      } else {
+        loader.unloadPlugin(file);
+        enabled = enabled.filter(p => p !== file);
+      }
+      savePlugins(enabled);
+    };
+
+    row.append(cb, label);
+    gui.appendChild(row);
+  });
+}
+
+function getSavedPlugins() {
+  try {
+    return JSON.parse(
+      localStorage.getItem("plugnplay_enabled_plugins") ?? "[]"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePlugins(list) {
+  try {
+    localStorage.setItem(
+      "plugnplay_enabled_plugins",
+      JSON.stringify(list)
+    );
+  } catch {}
 }
 
 // ================= GAME SETUP =================
