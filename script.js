@@ -119,6 +119,7 @@ class PluginLoader {
   }
 
   async loadPlugin(file) {
+    if (this.plugins.includes(file)) return;
     try {
       const module = await import(`./plugins/${file}`);
       if (typeof module.default === "function") {
@@ -131,13 +132,21 @@ class PluginLoader {
     }
   }
 
-  async loadAll(saved = []) {
-    const files = await this.fetchPluginList();
-    for (const f of files) {
-      if (saved.length && !saved.includes(f)) continue;
-      await this.loadPlugin(f);
-    }
+  async loadAll(savedPlugins = []) {
+  const files = await this.fetchPluginList();
+
+  // If nothing saved yet → treat all plugins in plugins.txt as enabled
+  const effectiveList = savedPlugins.length ? savedPlugins : files;
+
+  for (const f of files) {
+    if (!effectiveList.includes(f)) continue;
+    await this.loadPlugin(f);
   }
+
+  // CRITICAL: persist what actually loaded
+  savePlugins(this.plugins);
+}
+
 }
 
 // ================= PLUGIN GUI =================
@@ -166,14 +175,20 @@ async function setupPluginGUI(loader) {
     guiList.appendChild(row);
 
     checkbox.addEventListener("change", async () => {
-      if (checkbox.checked) {
-        if (!loader.plugins.includes(file)) await loader.loadPlugin(file);
-      } else {
-        loader.plugins = loader.plugins.filter(p => p !== file);
-        alert("Plugin unchecked. Reload page to fully remove its effects.");
-      }
-      savePlugins(loader.plugins);
-    });
+  let enabled = getSavedPlugins();
+
+  if (checkbox.checked) {
+    await loader.loadPlugin(file);
+    if (!enabled.includes(file)) enabled.push(file);
+  } else {
+    enabled = enabled.filter(p => p !== file);
+    loader.plugins = loader.plugins.filter(p => p !== file);
+    console.log(`Plugin disabled: ${file} (reload to fully unload)`);
+  }
+
+  savePlugins(enabled);
+});
+
   });
 }
 
@@ -298,17 +313,13 @@ window.addEventListener("keydown", e => {
 
 // Plugin loader
 const loader = new PluginLoader(engine);
-const savedPlugins = getSavedPlugins();
 
-loader.fetchPluginList().then(files => {
-  // Load only the plugins that exist in plugins.txt AND are saved in localStorage
-  const toLoad = files.filter(f => savedPlugins.includes(f));
-  loader.loadAll(toLoad).then(() => {
-    // Save what actually got loaded
-    savePlugins(loader.plugins);
-    setupPluginGUI(loader);
-  });
-});
+(async () => {
+  const saved = getSavedPlugins();
+  await loader.loadAll(saved);   // loads + auto-saves
+  await setupPluginGUI(loader);
+})();
+
 
 // Main loop
 function loop() {
