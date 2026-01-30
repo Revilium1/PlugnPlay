@@ -14,11 +14,14 @@ class EventBus {
 
 // ================= TILE REGISTRY =================
 const Tiles = [];
-function registerTile(tile) { Tiles.push(tile); }
 
-// Core tiles
+function registerTile(tile) {
+  // tile = { id, name, color, solid, pluginOrigin? }
+  Tiles.push(tile);
+}
+
+// register core tiles
 registerTile({ id: "wall", name: "Wall", color: "#555", solid: true });
-registerTile({ id: "floor", name: "Floor", color: "#aaa", solid: false });
 
 // ================= GRID ENGINE =================
 class GridEngine {
@@ -26,12 +29,7 @@ class GridEngine {
     this.w = w;
     this.h = h;
     this.tileSize = tileSize;
-
-    // Each cell has a ground and actor layer
-    this.grid = Array.from({ length: h }, () =>
-      Array.from({ length: w }, () => ({ ground: null, actor: null }))
-    );
-
+    this.grid = Array.from({ length: h }, () => Array(w).fill(null));
     this.entities = new Map();
     this.systems = [];
     this.bus = new EventBus();
@@ -40,34 +38,19 @@ class GridEngine {
 
   addSystem(sys) { this.systems.push(sys); }
 
-  addEntity(data, x, y, layer = null) {
-    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
-
+  addEntity(data, x, y) {
+    if (this.grid[y][x]) this.removeEntity(this.grid[y][x].id);
     const id = this.nextId++;
     const e = { id, x, y, ...data };
     this.entities.set(id, e);
-
-    const cell = this.grid[y][x];
-
-    // Decide layer
-    if (layer === "actor" || (!data.solid && layer === null)) {
-      if (cell.actor) return null; // can't place actor on another actor
-      cell.actor = e;
-    } else {
-      cell.ground = e;
-    }
-
+    this.grid[y][x] = e;
     return id;
   }
 
   removeEntity(id) {
     const e = this.entities.get(id);
     if (!e) return;
-
-    const cell = this.grid[e.y][e.x];
-    if (cell.ground === e) cell.ground = null;
-    if (cell.actor === e) cell.actor = null;
-
+    this.grid[e.y][e.x] = null;
     this.entities.delete(id);
   }
 
@@ -77,22 +60,19 @@ class GridEngine {
 
     const nx = e.x + dx;
     const ny = e.y + dy;
+
     if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
 
-    const targetCell = this.grid[ny][nx];
-
-    // Only block movement if the ground is solid or there is an actor
-    if (targetCell.ground?.solid || targetCell.actor) {
+    const target = this.grid[ny][nx];
+    if (target?.solid) {
       this.bus.emit("entityBlocked", e);
       return false;
     }
 
-    const oldCell = this.grid[e.y][e.x];
-    if (oldCell.actor === e) oldCell.actor = null;
-
+    this.grid[e.y][e.x] = null;
     e.x = nx;
     e.y = ny;
-    targetCell.actor = e;
+    this.grid[ny][nx] = e;
 
     this.bus.emit("entityMoved", e);
     return true;
@@ -100,8 +80,7 @@ class GridEngine {
 
   getEntityAt(x, y) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
-    const cell = this.grid[y][x];
-    return cell.actor ?? cell.ground ?? null;
+    return this.grid[y][x];
   }
 
   tick(dt) {
@@ -134,7 +113,9 @@ class PluginLoader {
       const res = await fetch(this.path);
       const text = await res.text();
       return text.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   }
 
   async loadPlugin(file) {
@@ -145,7 +126,9 @@ class PluginLoader {
         this.plugins.push(file);
         console.log("Plugin loaded:", file);
       }
-    } catch (err) { console.error(`Failed to load plugin ${file}:`, err); }
+    } catch (err) {
+      console.error(`Failed to load plugin ${file}:`, err);
+    }
   }
 
   async loadAll(saved = []) {
@@ -161,9 +144,9 @@ class PluginLoader {
 function setupEditor(engine, canvas) {
   let enabled = true;
   let hover = null;
-  let selectedTile = Tiles[0];
+  let selectedTile = Tiles[0]; // default selection
 
-  // Hotbar container
+  // hotbar container
   const hotbar = document.createElement("div");
   hotbar.style.position = "absolute";
   hotbar.style.bottom = "10px";
@@ -172,6 +155,7 @@ function setupEditor(engine, canvas) {
   hotbar.style.gap = "4px";
   document.body.appendChild(hotbar);
 
+  // render hotbar buttons
   function refreshHotbar() {
     hotbar.innerHTML = "";
     Tiles.forEach(tile => {
@@ -181,7 +165,10 @@ function setupEditor(engine, canvas) {
       btn.style.backgroundColor = tile.color;
       btn.style.border = tile === selectedTile ? "2px solid #0f0" : "1px solid #000";
       btn.title = tile.name;
-      btn.addEventListener("click", () => { selectedTile = tile; refreshHotbar(); });
+      btn.addEventListener("click", () => {
+        selectedTile = tile;
+        refreshHotbar();
+      });
       hotbar.appendChild(btn);
     });
   }
@@ -197,16 +184,12 @@ function setupEditor(engine, canvas) {
 
   canvas.addEventListener("mousedown", () => {
     if (!enabled || !hover || !selectedTile) return;
-
-    const cell = engine.grid[hover.y][hover.x];
-
-    // Don't overwrite player (actor layer)
-    if (cell.actor) return;
-
     engine.addEntity({ ...selectedTile }, hover.x, hover.y);
   });
 
-  window.addEventListener("keydown", e => { if (e.key === "e") enabled = !enabled; });
+  window.addEventListener("keydown", e => {
+    if (e.key === "e") enabled = !enabled;
+  });
 
   engine.bus.on("afterTick", () => {
     engine._editorHover = hover;
@@ -220,15 +203,10 @@ function render(engine, ctx) {
 
   for (let y = 0; y < engine.h; y++) {
     for (let x = 0; x < engine.w; x++) {
-      const cell = engine.grid[y][x];
-      if (cell.ground && cell.ground.color) {
-        ctx.fillStyle = cell.ground.color;
-        ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
-      }
-      if (cell.actor && cell.actor.color) {
-        ctx.fillStyle = cell.actor.color;
-        ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
-      }
+      const e = engine.grid[y][x];
+      if (!e || !e.color) continue;
+      ctx.fillStyle = e.color;
+      ctx.fillRect(x * engine.tileSize, y * engine.tileSize, engine.tileSize, engine.tileSize);
     }
   }
 
@@ -276,8 +254,11 @@ loader.loadAll([]);
 // Main loop
 function loop() {
   engine.tick(1);
+
+  // apply input-driven movement
   MovementSystem.update(engine);
   render(engine, ctx);
+
   requestAnimationFrame(loop);
 }
 loop();
