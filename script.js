@@ -44,21 +44,14 @@ class GridEngine {
   }
 
   moveEntity(id, dx, dy) {
-    const e = this.entities.get(id);
-    if (!e) return false;
-
-    const nx = e.x + dx;
-    const ny = e.y + dy;
-    if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
-
     const target = this.grid[ny][nx];
     const move = { entity: e, dx, dy, cancel: false };
     this.bus.emit("movementIntent", move);
     if (move.cancel) return false;
 
     if (target?.solid) {
-      this.bus.emit("entityBlocked", e);
-      return false;
+        this.bus.emit("entityBlocked", e);
+        return false;
     }
 
     this.grid[e.y][e.x] = null;
@@ -66,7 +59,7 @@ class GridEngine {
     e.y = ny;
     this.grid[ny][nx] = e;
     this.bus.emit("entityMoved", e);
-    return true;
+
   }
 
   getEntityAt(x, y) {
@@ -220,6 +213,8 @@ const player = engine.addEntity({
 window.addEventListener("keydown", e => {
   const p = engine.entities.get(player);
   if (!p) return;
+  p.velocity.dx = 0;
+  p.velocity.dy = 0;
   if (e.key === "ArrowUp") p.velocity.dy = -1;
   if (e.key === "ArrowDown") p.velocity.dy = 1;
   if (e.key === "ArrowLeft") p.velocity.dx = -1;
