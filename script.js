@@ -27,7 +27,7 @@ class GridEngine {
     this.h = h;
     this.tileSize = tileSize;
 
-    // Each cell holds ground and actor layers
+    // Each cell has a ground and actor layer
     this.grid = Array.from({ length: h }, () =>
       Array.from({ length: w }, () => ({ ground: null, actor: null }))
     );
@@ -40,7 +40,7 @@ class GridEngine {
 
   addSystem(sys) { this.systems.push(sys); }
 
-  addEntity(data, x, y) {
+  addEntity(data, x, y, layer = null) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
 
     const id = this.nextId++;
@@ -48,8 +48,14 @@ class GridEngine {
     this.entities.set(id, e);
 
     const cell = this.grid[y][x];
-    if (e.solid) cell.ground = e;
-    else cell.actor = e;
+
+    // Decide layer
+    if (layer === "actor" || (!data.solid && layer === null)) {
+      if (cell.actor) return null; // can't place actor on another actor
+      cell.actor = e;
+    } else {
+      cell.ground = e;
+    }
 
     return id;
   }
@@ -73,15 +79,20 @@ class GridEngine {
     const ny = e.y + dy;
     if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
 
-    const target = this.grid[ny][nx];
-    if (target.ground?.solid) return false;
+    const targetCell = this.grid[ny][nx];
+
+    // Only block movement if the ground is solid or there is an actor
+    if (targetCell.ground?.solid || targetCell.actor) {
+      this.bus.emit("entityBlocked", e);
+      return false;
+    }
 
     const oldCell = this.grid[e.y][e.x];
     if (oldCell.actor === e) oldCell.actor = null;
 
     e.x = nx;
     e.y = ny;
-    target.actor = e;
+    targetCell.actor = e;
 
     this.bus.emit("entityMoved", e);
     return true;
