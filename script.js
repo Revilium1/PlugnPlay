@@ -28,9 +28,9 @@ class GridEngine {
   addSystem(sys) { this.systems.push(sys); }
 
   addEntity(data, x, y) {
-    if (this.grid[y][x]) return null;
+    if (this.grid[y][x]) return null; // prevent overwriting
     const id = this.nextId++;
-    const e = { id, ...data, x, y };
+    const e = { id, x, y, ...data };
     this.entities.set(id, e);
     this.grid[y][x] = e;
     return id;
@@ -44,22 +44,27 @@ class GridEngine {
   }
 
   moveEntity(id, dx, dy) {
+    const e = this.entities.get(id);
+    if (!e) return false;
+
+    const nx = e.x + dx;
+    const ny = e.y + dy;
+    if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
+
     const target = this.grid[ny][nx];
-    const move = { entity: e, dx, dy, cancel: false };
-    this.bus.emit("movementIntent", move);
-    if (move.cancel) return false;
 
     if (target?.solid) {
-        this.bus.emit("entityBlocked", e);
-        return false;
+      this.bus.emit("entityBlocked", e);
+      return false;
     }
 
     this.grid[e.y][e.x] = null;
     e.x = nx;
     e.y = ny;
     this.grid[ny][nx] = e;
-    this.bus.emit("entityMoved", e);
 
+    this.bus.emit("entityMoved", e);
+    return true;
   }
 
   getEntityAt(x, y) {
@@ -80,17 +85,8 @@ const MovementSystem = {
       if (!e.velocity) continue;
       if (e.velocity.dx === 0 && e.velocity.dy === 0) continue;
       engine.moveEntity(e.id, e.velocity.dx, e.velocity.dy);
-    }
-  }
-};
-
-const FrictionSystem = {
-  update(engine) {
-    for (const e of engine.entities.values()) {
-      if (e.velocity) {
-        e.velocity.dx = 0;
-        e.velocity.dy = 0;
-      }
+      e.velocity.dx = 0; // reset after move
+      e.velocity.dy = 0;
     }
   }
 };
@@ -114,11 +110,15 @@ class PluginLoader {
   }
 
   async loadPlugin(file) {
-    const module = await import(`./plugins/${file}`);
-    if (typeof module.default === "function") {
-      module.default(this.engine);
-      this.plugins.push(file);
-      console.log("Plugin loaded:", file);
+    try {
+      const module = await import(`./plugins/${file}`);
+      if (typeof module.default === "function") {
+        module.default(this.engine);
+        this.plugins.push(file);
+        console.log("Plugin loaded:", file);
+      }
+    } catch (err) {
+      console.error(`Failed to load plugin ${file}:`, err);
     }
   }
 
@@ -191,7 +191,6 @@ const ctx = canvas.getContext("2d");
 const engine = new GridEngine(16, 16, 32);
 
 engine.addSystem(MovementSystem);
-engine.addSystem(FrictionSystem);
 
 setupEditor(engine, canvas);
 
@@ -213,19 +212,18 @@ const player = engine.addEntity({
 window.addEventListener("keydown", e => {
   const p = engine.entities.get(player);
   if (!p) return;
-  p.velocity.dx = 0;
-  p.velocity.dy = 0;
-  if (e.key === "ArrowUp") p.velocity.dy = -1;
-  if (e.key === "ArrowDown") p.velocity.dy = 1;
-  if (e.key === "ArrowLeft") p.velocity.dx = -1;
-  if (e.key === "ArrowRight") p.velocity.dx = 1;
+
+  if (e.key === "ArrowUp") p.velocity.dx = 0, p.velocity.dy = -1;
+  if (e.key === "ArrowDown") p.velocity.dx = 0, p.velocity.dy = 1;
+  if (e.key === "ArrowLeft") p.velocity.dx = -1, p.velocity.dy = 0;
+  if (e.key === "ArrowRight") p.velocity.dx = 1, p.velocity.dy = 0;
 });
 
-// Plugin system still active
+// Plugin system
 const loader = new PluginLoader(engine);
 loader.loadAll([]);
 
-// Loop
+// Main loop
 function loop() {
   engine.tick(1);
   render(engine, ctx);
