@@ -56,28 +56,39 @@ class GridEngine {
   }
 
   moveEntity(id, dx, dy) {
-    const e = this.entities.get(id);
-    if (!e) return false;
+  const e = this.entities.get(id);
+  if (!e) return false;
 
-    const nx = e.x + dx;
-    const ny = e.y + dy;
+  const nx = e.x + dx;
+  const ny = e.y + dy;
 
-    if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
+  if (nx < 0 || ny < 0 || nx >= this.w || ny >= this.h) return false;
 
-    const target = this.grid[ny][nx];
-    if (target?.solid) {
-      this.bus.emit("entityBlocked", e);
-      return false;
-    }
+  const target = this.grid[ny][nx];
 
-    this.grid[e.y][e.x] = null;
-    e.x = nx;
-    e.y = ny;
-    this.grid[ny][nx] = e;
-
-    this.bus.emit("entityMoved", e);
-    return true;
+  // only block if solid
+  if (target?.solid) {
+    this.bus.emit("entityBlocked", e);
+    return false;
   }
+
+  // remove only **solid** entities, leave non-solid (like floors)
+  if (target?.solid) this.removeEntity(target.id);
+
+  this.grid[e.y][e.x] = null;
+  e.x = nx;
+  e.y = ny;
+
+  // if there is a non-solid entity in the new cell, don't overwrite
+  if (!target?.solid) {
+    this.grid[ny][nx] = e; // player moves in
+  } else {
+    this.grid[ny][nx] = e;
+  }
+
+  this.bus.emit("entityMoved", e);
+  return true;
+}
 
   getEntityAt(x, y) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
