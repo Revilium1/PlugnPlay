@@ -81,12 +81,10 @@ class GridEngine {
 // ================= SYSTEMS =================
 const MovementSystem = {
   update(engine) {
-    for (const e of engine.entities.values()) {
-      if (!e.velocity) continue;
-      if (e.velocity.dx === 0 && e.velocity.dy === 0) continue;
-      engine.moveEntity(e.id, e.velocity.dx, e.velocity.dy);
-      e.velocity.dx = 0; // reset after move
-      e.velocity.dy = 0;
+    if (input.dx !== 0 || input.dy !== 0) {
+      engine.moveEntity(player, input.dx, input.dy);
+      input.dx = 0; // reset after move
+      input.dy = 0;
     }
   }
 };
@@ -209,14 +207,13 @@ const player = engine.addEntity({
 }, 3, 3);
 
 // Input
-window.addEventListener("keydown", e => {
-  const p = engine.entities.get(player);
-  if (!p) return;
+const input = { dx: 0, dy: 0 };
 
-  if (e.key === "ArrowUp") p.velocity.dx = 0, p.velocity.dy = -1;
-  if (e.key === "ArrowDown") p.velocity.dx = 0, p.velocity.dy = 1;
-  if (e.key === "ArrowLeft") p.velocity.dx = -1, p.velocity.dy = 0;
-  if (e.key === "ArrowRight") p.velocity.dx = 1, p.velocity.dy = 0;
+window.addEventListener("keydown", e => {
+  if (e.key === "ArrowUp") input.dx = 0, input.dy = -1;
+  if (e.key === "ArrowDown") input.dx = 0, input.dy = 1;
+  if (e.key === "ArrowLeft") input.dx = -1, input.dy = 0;
+  if (e.key === "ArrowRight") input.dx = 1, input.dy = 0;
 });
 
 // Plugin system
