@@ -21,11 +21,22 @@ class Engine {
     this.systems = [];
     this.bus = new EventBus();
     this.nextId = 1;
+
+    // 👇 NEW
+    this.blocks = [];
+    this.selectedBlock = 0;
+  }
+
+  registerBlock(block) {
+    this.blocks.push(block);
+    this.bus.emit("blockRegistered", block);
   }
 
   addEntity(components) {
     const id = this.nextId++;
-    this.entities.set(id, { id, components });
+    const entity = { id, components };
+    this.entities.set(id, entity);
+    this.bus.emit("entityAdded", entity);
     return id;
   }
 
@@ -83,6 +94,84 @@ const FrictionSystem = {
     }
   }
 };
+
+function setupMapEditor(engine, canvas) {
+  let enabled = true;
+  let hoverCell = null;
+
+  const toolbar = document.getElementById("toolbar");
+
+  function renderToolbar() {
+    toolbar.innerHTML = "";
+
+    engine.blocks.forEach((block, index) => {
+      const btn = document.createElement("button");
+      btn.textContent = block.name;
+      btn.style.marginRight = "4px";
+      btn.style.background = index === engine.selectedBlock ? "#88f" : "#ccc";
+
+      btn.onclick = () => {
+        engine.selectedBlock = index;
+        renderToolbar();
+      };
+
+      toolbar.appendChild(btn);
+    });
+  }
+
+  // 👇 update toolbar when plugins add blocks
+  engine.bus.on("blockRegistered", renderToolbar);
+
+  canvas.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / engine.tileSize);
+    const y = Math.floor((e.clientY - rect.top) / engine.tileSize);
+    hoverCell = { x, y };
+  });
+
+  canvas.addEventListener("mousedown", () => {
+    if (!enabled || !hoverCell) return;
+
+    const block = engine.blocks[engine.selectedBlock];
+    if (!block) return;
+
+    placeBlock(engine, hoverCell.x, hoverCell.y, block);
+  });
+
+  window.addEventListener("keydown", e => {
+    if (e.key === "e") enabled = !enabled;
+  });
+
+  engine.bus.on("renderOverlay", ({ ctx }) => {
+    if (!enabled || !hoverCell) return;
+
+    ctx.strokeStyle = "#0f0";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      hoverCell.x * engine.tileSize,
+      hoverCell.y * engine.tileSize,
+      engine.tileSize,
+      engine.tileSize
+    );
+  });
+
+  function placeBlock(engine, x, y, block) {
+    // remove existing at tile
+    const existing = engine.getEntitiesWith("position")
+      .filter(e =>
+        e.components.position.x === x &&
+        e.components.position.y === y
+      );
+
+    existing.forEach(e => engine.entities.delete(e.id));
+
+    // place new
+    engine.addEntity(block.create(x, y));
+  }
+
+  // initial render
+  renderToolbar();
+}
 
 function isBlocked(engine, x, y) {
   if (x < 0 || y < 0 || x >= engine.w || y >= engine.h) return true;
@@ -206,80 +295,7 @@ function render(engine, ctx) {
     );
   }
 
-  if (engine._editorEnabled && engine._editorHover) {
-    const { x, y } = engine._editorHover;
-    ctx.strokeStyle = "#0f0";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(
-      x * engine.tileSize,
-      y * engine.tileSize,
-      engine.tileSize,
-      engine.tileSize
-    );
-  }
-}
-
-// ================= PLUGINS =================
-// Ice sliding
-export function IcePlugin(engine) {
-  engine.bus.on("entityMoved", e => {
-    if (!e.components.ice) return;
-    const v = e.components.velocity;
-    e.components._iceDir = { dx: v.dx, dy: v.dy };
-  });
-
-  engine.bus.on("afterTick", engine => {
-    for (const e of engine.getEntitiesWith("ice", "position")) {
-      if (!e.components._iceDir) continue;
-      e.components.velocity.dx = e.components._iceDir.dx;
-      e.components.velocity.dy = e.components._iceDir.dy;
-    }
-  });
-
-  engine.bus.on("entityBlocked", e => {
-    if (!e.components.ice) return;
-    e.components._iceDir = null;
-  });
-}
-
-// Map editor
-export function MapEditorPlugin(engine) {
-  const canvas = document.getElementById("game");
-  let enabled = true;
-  let hoverCell = null;
-
-  canvas.addEventListener("mousemove", e => {
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((e.clientX - rect.left) / engine.tileSize);
-    const y = Math.floor((e.clientY - rect.top) / engine.tileSize);
-    hoverCell = { x, y };
-  });
-
-  canvas.addEventListener("mousedown", () => {
-    if (!enabled || !hoverCell) return;
-    toggleWall(engine, hoverCell.x, hoverCell.y);
-  });
-
-  window.addEventListener("keydown", e => {
-    if (e.key === "e") enabled = !enabled;
-  });
-
-  engine.bus.on("afterTick", () => {
-    engine._editorHover = hoverCell;
-    engine._editorEnabled = enabled;
-  });
-}
-
-function toggleWall(engine, x, y) {
-  const existing = engine.getEntitiesWith("position", "solid")
-    .find(e => e.components.position.x === x && e.components.position.y === y);
-
-  if (existing) engine.entities.delete(existing.id);
-  else engine.addEntity({
-    position: Position(x, y),
-    solid: Solid(),
-    renderable: Renderable("#555")
-  });
+engine.bus.emit("renderOverlay", { engine, ctx });
 }
 
 // ================= GAME SETUP =================
@@ -292,6 +308,26 @@ engine.addSystem(FrictionSystem);
 
 const loader = new PluginLoader(engine);
 const savedPlugins = getSavedPlugins();
+
+setupMapEditor(engine, canvas);
+engine.registerBlock({
+  name: "Wall",
+  color: "#555",
+  create: (x, y) => ({
+    position: Position(x, y),
+    solid: Solid(),
+    renderable: Renderable("#555")
+  })
+});
+
+engine.registerBlock({
+  name: "Empty",
+  color: "#000",
+  create: (x, y) => ({
+    position: Position(x, y),
+    renderable: Renderable("#000")
+  })
+});
 
 loader.loadAll(savedPlugins).then(() => {
   setupPluginGUI(loader);
@@ -309,7 +345,6 @@ loader.loadAll(savedPlugins).then(() => {
     position: Position(3, 3),
     velocity: Velocity(0, 0),
     renderable: Renderable("#4af"),
-    ice: true
   });
 
   // Input
