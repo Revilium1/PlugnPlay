@@ -1,42 +1,49 @@
 export default function IcePlugin(engine) {
+  engine.registerBlock({
+    name: "Ice Floor",
+    color: "#4af",
+    layer: "background",
+    create: (x, y) => ({
+      position: { x, y },
+      renderable: { color: "#4af" },
+      iceFloor: {}
+    })
+  });
 
-  // 👇 Auto-add ice to player(s)
-  for (const e of engine.getEntitiesWith("velocity", "position")) {
-    // You can refine this condition later (tag system, player flag, etc.)
-    e.components.ice = {};
+  function isOnIce(entity) {
+    const p = entity.components.position;
+    return engine.getEntitiesWith("position", "iceFloor")
+      .some(tile => tile.components.position.x === p.x && tile.components.position.y === p.y);
   }
 
-  // If entities can be added later, catch them too
-  engine.bus.on("entityAdded", e => {
-    if (e.components.velocity && e.components.position) {
-      e.components.ice = {};
-    }
-  });
+  engine.bus.on("entityMoved", entity => {
+    if (!entity.components.velocity || !entity.components.position) return;
 
-  // Store direction on move
-  engine.bus.on("entityMoved", e => {
-    if (!e.components.ice) return;
-
-    const v = e.components.velocity;
+    const v = entity.components.velocity;
     if (v.dx !== 0 || v.dy !== 0) {
-      e.components._iceDir = { dx: v.dx, dy: v.dy };
+      entity.components._iceDir = isOnIce(entity)
+        ? { dx: v.dx, dy: v.dy }
+        : null;
     }
   });
 
-  // Reapply movement after friction
   engine.bus.on("afterTick", engine => {
-    for (const e of engine.getEntitiesWith("ice", "position")) {
-      const dir = e.components._iceDir;
+    for (const entity of engine.getEntitiesWith("velocity", "position")) {
+      const dir = entity.components._iceDir;
       if (!dir) continue;
-
-      e.components.velocity.dx = dir.dx;
-      e.components.velocity.dy = dir.dy;
+      if (isOnIce(entity)) {
+        entity.components.velocity.dx = dir.dx;
+        entity.components.velocity.dy = dir.dy;
+      } else {
+        entity.components._iceDir = null;
+      }
     }
   });
 
-  // Stop when hitting wall
-  engine.bus.on("entityBlocked", e => {
-    if (!e.components.ice) return;
-    e.components._iceDir = null;
+  engine.bus.on("entityBlocked", entity => {
+    if (!entity.components.position || !entity.components.velocity) return;
+    if (isOnIce(entity)) {
+      entity.components._iceDir = null;
+    }
   });
 }

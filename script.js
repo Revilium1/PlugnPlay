@@ -106,7 +106,8 @@ function setupMapEditor(engine, canvas) {
 
     engine.blocks.forEach((block, index) => {
       const btn = document.createElement("button");
-      btn.textContent = block.name;
+      const layerLabel = block.layer === "background" ? " (Background)" : "";
+      btn.textContent = block.name + layerLabel;
       btn.style.marginRight = "4px";
       btn.style.background = index === engine.selectedBlock ? "#88f" : "#ccc";
 
@@ -156,17 +157,23 @@ function setupMapEditor(engine, canvas) {
   });
 
   function placeBlock(engine, x, y, block) {
-    // remove existing at tile
+    const layer = block.layer ?? "foreground";
+
     const existing = engine.getEntitiesWith("position")
       .filter(e =>
         e.components.position.x === x &&
-        e.components.position.y === y
+        e.components.position.y === y &&
+        (e.components.layer ?? "foreground") === layer
       );
 
     existing.forEach(e => engine.entities.delete(e.id));
 
-    // place new
-    engine.addEntity(block.create(x, y));
+    if (block.clear) return;
+
+    const components = block.create(x, y);
+    if (!components) return;
+    if (!components.layer) components.layer = layer;
+    engine.addEntity(components);
   }
 
   // initial render
@@ -187,10 +194,13 @@ class PluginLoader {
     this.plugins = [];
   }
 
-  async loadAll(savedPlugins = []) {
+  async loadAll(savedPlugins = null) {
     const pluginFiles = await this.fetchPluginList();
+    const hasPrefs = Array.isArray(savedPlugins);
+
     for (const file of pluginFiles) {
-      if (savedPlugins.length && !savedPlugins.includes(file)) continue;
+      if (hasPrefs && !savedPlugins.includes(file)) continue;
+      if (hasPrefs && savedPlugins.length === 0) continue;
       await this.loadPlugin(file);
     }
     console.log("PlugnPlay loaded plugins:", this.plugins);
@@ -228,8 +238,9 @@ class PluginLoader {
 function getSavedPlugins() {
   try {
     const saved = localStorage.getItem("plugnplay_enabled_plugins");
-    return saved ? JSON.parse(saved) : [];
-  } catch (e) { return []; }
+    if (saved === null) return null;
+    return JSON.parse(saved);
+  } catch (e) { return null; }
 }
 
 function savePlugins(enabledPlugins) {
@@ -243,13 +254,14 @@ async function setupPluginGUI(loader) {
   const guiList = document.getElementById("plugin-list");
   const pluginFiles = await loader.fetchPluginList();
   const savedPlugins = getSavedPlugins();
+  const hasPrefs = Array.isArray(savedPlugins);
 
   pluginFiles.forEach(file => {
     const row = document.createElement("div");
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.id = file;
-    checkbox.checked = savedPlugins.includes(file);
+    checkbox.checked = hasPrefs ? savedPlugins.includes(file) : true;
 
     const label = document.createElement("label");
     label.htmlFor = file;
@@ -281,11 +293,25 @@ async function setupPluginGUI(loader) {
 function render(engine, ctx) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
+  const backgroundEntities = [];
+  const foregroundEntities = [];
+
   for (const e of engine.entities.values()) {
     const p = e.components.position;
     const r = e.components.renderable;
     if (!p || !r) continue;
 
+    const layer = e.components.layer ?? "foreground";
+    if (layer === "background") {
+      backgroundEntities.push(e);
+    } else {
+      foregroundEntities.push(e);
+    }
+  }
+
+  for (const e of [...backgroundEntities, ...foregroundEntities]) {
+    const p = e.components.position;
+    const r = e.components.renderable;
     ctx.fillStyle = r.color;
     ctx.fillRect(
       p.x * engine.tileSize,
@@ -295,7 +321,7 @@ function render(engine, ctx) {
     );
   }
 
-engine.bus.emit("renderOverlay", { engine, ctx });
+  engine.bus.emit("renderOverlay", { engine, ctx });
 }
 
 // ================= GAME SETUP =================
@@ -311,6 +337,16 @@ const savedPlugins = getSavedPlugins();
 
 setupMapEditor(engine, canvas);
 engine.registerBlock({
+  name: "Floor",
+  color: "#222",
+  layer: "background",
+  create: (x, y) => ({
+    position: Position(x, y),
+    renderable: Renderable("#222")
+  })
+});
+
+engine.registerBlock({
   name: "Wall",
   color: "#555",
   create: (x, y) => ({
@@ -321,14 +357,19 @@ engine.registerBlock({
 });
 
 engine.registerBlock({
-  name: "Empty",
+  name: "Eraser (Foreground)",
   color: "#000",
-  create: (x, y) => ({
-    position: Position(x, y),
-    renderable: Renderable("#000")
-  })
+  layer: "foreground",
+  clear: true,
+  create: () => null
 });
-
+engine.registerBlock({
+  name: "Eraser",
+  color: "#000",
+  layer: "background",
+  clear: true,
+  create: () => null
+});
 loader.loadAll(savedPlugins).then(() => {
   setupPluginGUI(loader);
 
@@ -344,7 +385,7 @@ loader.loadAll(savedPlugins).then(() => {
   const player = engine.addEntity({
     position: Position(3, 3),
     velocity: Velocity(0, 0),
-    renderable: Renderable("#4af"),
+    renderable: Renderable("rgb(255, 68, 68)"),
   });
 
   // Input
